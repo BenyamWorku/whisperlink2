@@ -31,3 +31,8 @@ Instance A                             Instance B
    |--- Initiates TCP Connection to B ----->|
    |                                        |
    |<--------- TCP Chat Communication ----->|
+
+```
+How to run :
+./chat [peer_name] 
+assuming the output file is chat
