@@ -1,6 +1,7 @@
 #include <iostream>
 #include <string>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <thread>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -18,7 +19,7 @@ int initialize_tcp_listener(const std::string &local_ip, int& tcp_port);
 void broadcast_presence(const std::string &local_ip, int tcp_port);
 std::pair<std::string, int> discover_peers(const std::string &local_ip,int tcp_port);
 bool establish_connection(int &connection_sock, int listening_sock, const std::string &peer_ip, int peer_port);
-void enable_non_blocking_io(int connection_sock);
+// void enable_non_blocking_io(int connection_sock);
 void handle_chat_session(int connection_sock, const std::string &peer_name);
 std::string get_local_ip();
 
@@ -42,8 +43,9 @@ int main(int argc, char *argv[])
     std::thread broadcaster(broadcast_presence, local_ip, tcp_port);
 
     // Listen for peer discovery and connect using the discovered IP and TCP port
-    auto [peer_ip, peer_port] = discover_peers(local_ip,tcp_port); // extracting the ip and port of peer
-
+    std::pair<std::string, int> peer_info = discover_peers(local_ip,tcp_port); // extracting the ip and port of peer
+    std::string peer_ip=peer_info.first;
+    int peer_port = peer_info.second;
     // flag to track whether we are connected
 
     int connection_sock = listening_sock; // default is listening mode
@@ -51,7 +53,7 @@ int main(int argc, char *argv[])
 
     if (connected)
     {
-        enable_non_blocking_io(connection_sock);
+        // enable_non_blocking_io(connection_sock);
         handle_chat_session(connection_sock, peer_name); // Pass the peer's name to the chat loop
     }
     else
@@ -284,87 +286,160 @@ bool establish_connection(int &connection_sock, int listening_sock, const std::s
     return connected; // Return true if we are connected, false otherwise
 }
 
-void enable_non_blocking_io(int connection_sock)
-{
-    // Retrieve current socket flags
-    int flags = fcntl(connection_sock, F_GETFL, 0);
-    if (flags == -1)
-    {
-        std::cerr << "Error: Failed to retrieve flags for connection socket." << std::endl;
-        return;
-    }
-
-    // Set non-blocking flag
-    if (fcntl(connection_sock, F_SETFL, flags | O_NONBLOCK) == -1)
-    {
-        std::cerr << "Error: Failed to set non-blocking mode for connection socket." << std::endl;
-    }
-    else
-    {
-        std::cout << "Non-blocking I/O enabled on connection socket." << std::endl;
-    }
-}
-
 void handle_chat_session(int connection_sock, const std::string &peer_name)
 {
-    char buffer[256];          // Buffer for storing incoming messages
-    std::string input_message; // String to store outgoing messages
+    char buffer[256];
+    std::string input_message;
+    fd_set read_fds;
+    struct timeval tv;
 
     std::cout << "Chat session started with peer: " << peer_name << std::endl;
 
-    // Main chat loop
     while (true)
     {
-        // Step 1: Display prompt for the user to type a message
-        std::cout << "You: ";
-        std::getline(std::cin, input_message); // Get input from the user
+        FD_ZERO(&read_fds);
+        FD_SET(STDIN_FILENO, &read_fds);
+        FD_SET(connection_sock, &read_fds);
 
-        // Step 2: Send the user's message to the peer (blocking send)
-        if (send(connection_sock, input_message.c_str(), input_message.size(), 0) == -1)
-        {
-            std::cerr << "Error: Failed to send message." << std::endl;
-            break; // Exit if sending fails
-        }
+        tv.tv_sec = 0;
+        tv.tv_usec = 100000; // 100ms timeout
 
-        if (input_message == "/exit")
+        int max_fd = std::max(STDIN_FILENO, connection_sock) + 1;
+        int activity = select(max_fd, &read_fds, NULL, NULL, &tv);
+
+        if (activity < 0)
         {
-            // User typed "/exit" to end the chat session
-            std::cout << "Ending chat session." << std::endl;
+            std::cerr << "Error in select: " << strerror(errno) << std::endl;
             break;
         }
 
-        // Step 3: Non-blocking receive (recv) to get the peer's response
-        memset(buffer, 0, sizeof(buffer));                                         // Clear the buffer
-        int bytes_received = recv(connection_sock, buffer, sizeof(buffer) - 1, 0); // Non-blocking recv
+        if (FD_ISSET(STDIN_FILENO, &read_fds))
+        {
+            std::cout << "You: ";
+            std::getline(std::cin, input_message);
 
-        if (bytes_received > 0)
-        {
-            // Successfully received a message from the peer
-            buffer[bytes_received] = '\0';                         // Null-terminate the received message
-            std::cout << peer_name << ": " << buffer << std::endl; // Display the peer's message
+            if (send(connection_sock, input_message.c_str(), input_message.size(), 0) == -1)
+            {
+                std::cerr << "Error: Failed to send message." << std::endl;
+                break;
+            }
+
+            if (input_message == "/exit")
+            {
+                std::cout << "Ending chat session." << std::endl;
+                break;
+            }
         }
-        else if (bytes_received == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+
+        if (FD_ISSET(connection_sock, &read_fds))
         {
-            // No data available, non-blocking mode is working, continue
-        }
-        else if (bytes_received == 0)
-        {
-            // The peer has closed the connection
-            std::cout << peer_name << " has disconnected." << std::endl;
-            break; // Exit the chat session loop
-        }
-        else
-        {
-            // Some other error occurred
-            std::cerr << "Error on receiving data: " << strerror(errno) << std::endl;
-            break;
+            memset(buffer, 0, sizeof(buffer));
+            int bytes_received = recv(connection_sock, buffer, sizeof(buffer) - 1, 0);
+
+            if (bytes_received > 0)
+            {
+                buffer[bytes_received] = '\0';
+                std::cout << peer_name << ": " << buffer << std::endl;
+            }
+            else if (bytes_received == 0)
+            {
+                std::cout << peer_name << " has disconnected." << std::endl;
+                break;
+            }
+            else
+            {
+                std::cerr << "Error on receiving data: " << strerror(errno) << std::endl;
+                break;
+            }
         }
     }
 
-    // Step 4: Close the connection socket
     close(connection_sock);
     std::cout << "Connection closed." << std::endl;
 }
+// void enable_non_blocking_io(int connection_sock)
+// {
+//     // Retrieve current socket flags
+//     int flags = fcntl(connection_sock, F_GETFL, 0);
+//     if (flags == -1)
+//     {
+//         std::cerr << "Error: Failed to retrieve flags for connection socket." << std::endl;
+//         return;
+//     }
+
+//     // Set non-blocking flag
+//     if (fcntl(connection_sock, F_SETFL, flags | O_NONBLOCK) == -1)
+//     {
+//         std::cerr << "Error: Failed to set non-blocking mode for connection socket." << std::endl;
+//     }
+//     else
+//     {
+//         std::cout << "Non-blocking I/O enabled on connection socket." << std::endl;
+//     }
+// }
+
+// end of enable non blocking
+
+// void OLD_handle_chat_session(int connection_sock, const std::string &peer_name)
+// {
+//     char buffer[256];          // Buffer for storing incoming messages
+//     std::string input_message; // String to store outgoing messages
+
+//     std::cout << "Chat session started with peer: " << peer_name << std::endl;
+
+//     // Main chat loop
+//     while (true)
+//     {
+//         // Step 1: Display prompt for the user to type a message
+//         std::cout << "You: ";
+//         std::getline(std::cin, input_message); // Get input from the user
+
+//         // Step 2: Send the user's message to the peer (blocking send)
+//         if (send(connection_sock, input_message.c_str(), input_message.size(), 0) == -1)
+//         {
+//             std::cerr << "Error: Failed to send message." << std::endl;
+//             break; // Exit if sending fails
+//         }
+
+//         if (input_message == "/exit")
+//         {
+//             // User typed "/exit" to end the chat session
+//             std::cout << "Ending chat session." << std::endl;
+//             break;
+//         }
+
+//         // Step 3: Non-blocking receive (recv) to get the peer's response
+//         memset(buffer, 0, sizeof(buffer));                                         // Clear the buffer
+//         int bytes_received = recv(connection_sock, buffer, sizeof(buffer) - 1, 0); // Non-blocking recv
+
+//         if (bytes_received > 0)
+//         {
+//             // Successfully received a message from the peer
+//             buffer[bytes_received] = '\0';                         // Null-terminate the received message
+//             std::cout << peer_name << ": " << buffer << std::endl; // Display the peer's message
+//         }
+//         else if (bytes_received == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+//         {
+//             // No data available, non-blocking mode is working, continue
+//         }
+//         else if (bytes_received == 0)
+//         {
+//             // The peer has closed the connection
+//             std::cout << peer_name << " has disconnected." << std::endl;
+//             break; // Exit the chat session loop
+//         }
+//         else
+//         {
+//             // Some other error occurred
+//             std::cerr << "Error on receiving data: " << strerror(errno) << std::endl;
+//             break;
+//         }
+//     }
+
+//     // Step 4: Close the connection socket
+//     close(connection_sock);
+//     std::cout << "Connection closed." << std::endl;
+// }
 
 std::string get_local_ip()
 {
