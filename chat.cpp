@@ -11,7 +11,7 @@
 #include <fcntl.h>
 
 #define BUFFER_SIZE 1024
-#define DISCOVERY_PORT 9000
+#define DISCOVERY_PORT 25000
 #define DISCOVERY_MESSAGE "Peer discovery broadcast"
 using namespace std;
 
@@ -22,9 +22,12 @@ void broadcast_presence(const std::string &local_ip, int tcp_port, std::string l
 // std::pair<std::string, int> discover_peers(const std::string &local_ip,int tcp_port);
 std::tuple<std::string, std::string, int> discover_peers(const std::string &local_name, const std::string &local_ip, int tcp_port);
 
-bool establish_connection(int &connection_sock, int listening_sock, const std::string &peer_ip, int peer_port);
+//bool establish_connection(int &connection_sock, int listening_sock, const std::string &peer_ip, int peer_port);
+bool establish_connection(int &connection_sock, int listening_sock, const std::string &peer_ip, int peer_port,std::string& peer_name);
 // void enable_non_blocking_io(int connection_sock);
-void handle_chat_session(int connection_sock, const std::string &local_name);
+void handle_chat_session(int connection_sock, const std::string &local_name,std::string &peer_name);
+
+//void handle_chat_session(int connection_sock, const std::string &local_name);
 std::string get_local_ip();
 
 int main(int argc, char *argv[])
@@ -62,12 +65,12 @@ int main(int argc, char *argv[])
     // connected is the flag to track whether we are connected
 
     int connection_sock = listening_sock; // default is listening mode
-    bool connected = establish_connection(connection_sock, listening_sock, peer_ip, peer_port);
+    bool connected = establish_connection(connection_sock, listening_sock, peer_ip, peer_port,peer_name);
 
     if (connected)
     {
         // enable_non_blocking_io(connection_sock);
-        handle_chat_session(connection_sock, local_name); // Pass the peer's name to the chat loop
+        handle_chat_session(connection_sock, local_name,peer_name); // Pass the peer's name to the chat loop
     }
     else
     {
@@ -245,11 +248,11 @@ std::tuple<std::string, std::string, int> discover_peers(const std::string &loca
     return {"", "", -1}; // Default return value in case no peers are discovered
 }
 
-bool establish_connection(int &connection_sock, int listening_sock, const std::string &peer_ip, int peer_port)
+bool establish_connection(int &connection_sock, int listening_sock, const std::string &peer_ip, int peer_port,std::string& peer_name)
 {
     bool connected = false;
     //  Attempt to connect to the discovered peer (client mode)
-    if (!peer_ip.empty() && peer_port > 0)
+    if (!peer_ip.empty() && peer_port > 0 && !peer_name.empty())
     {
         // Create a TCP socket for the connection
         connection_sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -268,12 +271,12 @@ bool establish_connection(int &connection_sock, int listening_sock, const std::s
         // Try to connect to the peer
         if (connect(connection_sock, (sockaddr *)&peer_addr, sizeof(peer_addr)) == 0)
         {
-            std::cout << "Successfully connected to peer at " << peer_ip << ":" << peer_port << std::endl;
+            std::cout << "Successfully connected to peer"<<peer_name<<" at " << peer_ip << ":" << peer_port << std::endl;
             connected = true; // Connection successful
         }
         else
         {
-            std::cerr << "Failed to connect to peer at " << peer_ip << ":" << peer_port << std::endl;
+            std::cerr << "Failed to connect to peer" << peer_name<< " at " << peer_ip << ":" << peer_port << std::endl;
             close(connection_sock); // Close the socket since the connection failed
         }
     }
@@ -302,7 +305,7 @@ bool establish_connection(int &connection_sock, int listening_sock, const std::s
     return connected; // Return true if we are connected, false otherwise
 }
 
-void handle_chat_session(int connection_sock, const std::string &local_name)
+void handle_chat_session(int connection_sock, const std::string &local_name,std::string &peer_name)
 {
     char buffer[256];
     std::string input_message;
@@ -310,7 +313,7 @@ void handle_chat_session(int connection_sock, const std::string &local_name)
     struct timeval tv;
 
     // here local_name should be the name of the other peer, so not good
-    std::cout << "Chat session started with peer: " << local_name << std::endl;
+    std::cout << "Chat session started with peer: " << peer_name << std::endl;
     while (true)
     {
         FD_ZERO(&read_fds);
@@ -355,11 +358,11 @@ void handle_chat_session(int connection_sock, const std::string &local_name)
             if (bytes_received > 0)
             {
                 buffer[bytes_received] = '\0';
-                std::cout << local_name << ": " << buffer << std::endl;
+                std::cout << peer_name << ": " << buffer << std::endl;
             }
             else if (bytes_received == 0)
             {
-                std::cout << local_name << " has disconnected." << std::endl;
+                std::cout << peer_name << " has disconnected." << std::endl;
                 break;
             }
             else
