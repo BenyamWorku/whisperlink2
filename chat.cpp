@@ -9,11 +9,15 @@
 #include <ifaddrs.h>
 #include <cstring> // for memset
 #include <fcntl.h>
+#include <csignal>
 
 #define BUFFER_SIZE 1024
 #define DISCOVERY_PORT 25000
 #define DISCOVERY_MESSAGE "Peer discovery broadcast"
 using namespace std;
+int udp_sock=-1;
+int connection_sock=-1;
+int listening_sock=-1;
 
 // function prototypes/declarations
 int initialize_tcp_listener(const std::string &local_ip, int &tcp_port);
@@ -29,9 +33,11 @@ void handle_chat_session(int connection_sock, const std::string &local_name,std:
 
 //void handle_chat_session(int connection_sock, const std::string &local_name);
 std::string get_local_ip();
+void signal_handler(int signal);
 
 int main(int argc, char *argv[])
 {
+    signal(SIGINT,signal_handler);//registering sh to handle ctrl+C
     if (argc < 2)
     {
         std::cerr << "Usage: " << argv[0] << " <peer_name>" << std::endl;
@@ -191,7 +197,7 @@ std::tuple<std::string, std::string, int> discover_peers(const std::string &loca
 
     // Set a timeout for receiving to avoid indefinite hanging
     struct timeval timeout;
-    timeout.tv_sec = 5; // Timeout after 5 seconds
+    timeout.tv_sec = 25; // Timeout after 5 seconds
     timeout.tv_usec = 0;
     setsockopt(udp_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
@@ -417,6 +423,29 @@ std::string get_local_ip()
     return local_ip;
 }
 
+void signal_handler(int signal) {
+    if(signal==SIGINT) {
+        std::cout<<"SIGINT received. cleaning up resources"<<std::endl;
+       // Close UDP socket if it is open
+        if (udp_sock != -1) {
+            close(udp_sock);
+            std::cout << "UDP socket closed." << std::endl;
+        }
+
+        // Close the TCP connection socket if it is open
+        if (connection_sock != -1) {
+            close(connection_sock);
+            std::cout << "TCP connection socket closed." << std::endl;
+        }
+
+        // Close the listening socket if it is open
+        if (listening_sock != -1) {
+            close(listening_sock);
+            std::cout << "Listening socket closed." << std::endl;
+        }
+        exit(0);
+    }
+}
 // void enable_non_blocking_io(int connection_sock)
 // {
 //     // Retrieve current socket flags
